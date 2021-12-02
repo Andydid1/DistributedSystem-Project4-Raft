@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html>
+    <big>Inventory</big>
+    <table width="80%" border="3" cellpadding="0" cellspacing="0">
+        <tr>
+            <th>Product name</th>
+            <th>Description</th>
+            <th>Unit price ($)</th>
+            <th>Update</th>
+            <th>Delete</th>
+        </tr>
+        {{range .}}
+            <tr>
+                <td>{{.ItemName}}</td>
+                <td>{{.ItemDescription}}</td>
+                <td>{{.UnitPrice}}</td>
+                <td><a href="/updateitempage?itemId={{.Id}}&itemName={{.ItemName}}&itemDescription={{.ItemDescription}}&unitPrice={{.UnitPrice}}"><button>Update</button></a></td>
+                <td><a href="/deleteitem?itemId={{.Id}}"><button>Delete</button></a></td>
+            </tr>
+        {{  end}}
+    </table>
+    <a href="/additempage">Add a new item</a>
+</html>

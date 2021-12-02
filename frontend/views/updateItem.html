@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html>
+    <big>Update Item</big>
+    <form action="/updateitem" method="POST">
+        <input type="hidden" name="itemId" value="{{.Id}}">
+        <div>Item Name:<input type="text" name="itemName" value="{{.ItemName}}"></div>
+        <div>Item Description:<input type="text" name="itemDescription" value="{{.ItemDescription}}"></div>
+        <div>Unit Price:<input type="text" name="unitPrice" value="{{.UnitPrice}}"></div>
+        <div>
+            <input type="submit" value="Update">
+        </div>
+    </form>
+    <a href="/inventory"><button>Back to Inventory</button></a>
+</html> 
