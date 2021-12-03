@@ -52,6 +52,8 @@ func mapToSlice(itemMap map[int]models.Item) []models.Item {
 	return result
 }
 
+// Function used to dial and call RPC in backend
+// Return true if connection is success
 func call(address string, calling string, args interface{}, reply interface{}) bool {
 	c, dialErr := rpc.DialHTTP("tcp", address)
 	if dialErr != nil {
@@ -68,9 +70,11 @@ func call(address string, calling string, args interface{}, reply interface{}) b
 	return true
 }
 
+// This function loop over all known backend endpoints, tries to get a result
 func requestBackEnds(args models.HandleClientRequestArguments, reply *models.HandleClientRequestReply) {
 	for _, url := range BackEndUrls {
 		success := call(url, "Server.HandleClientRequest", args, reply)
+		// If the connection is success, stop the loop
 		if success {
 			break
 		}
@@ -88,8 +92,8 @@ func inventory(ctx iris.Context) {
 	var inventory models.Inventory
 	unmarshalErr := json.Unmarshal(handleClientRequestReply.ResponseData, &inventory)
 	itemSlice := mapToSlice(inventory.Items)
+	// If the request failed
 	if unmarshalErr != nil {
-		fmt.Println(unmarshalErr.Error())
 		ctx.HTML(`Failed!`)
 		return
 	}
@@ -123,6 +127,7 @@ func addItem(ctx iris.Context) {
 	handleClientRequestArgs.Method = "add"
 	handleClientRequestArgs.Variables = newItemByte
 	requestBackEnds(handleClientRequestArgs, &handleClientRequestReply)
+	// If the request failed
 	if !handleClientRequestReply.Result {
 		ctx.HTML("Failed")
 		return
@@ -179,6 +184,7 @@ func updateItem(ctx iris.Context) {
 	handleClientRequestArgs.Method = "update"
 	handleClientRequestArgs.Variables = newItemByte
 	requestBackEnds(handleClientRequestArgs, &handleClientRequestReply)
+	// If the request failed
 	if !handleClientRequestReply.Result {
 		ctx.HTML("Failed")
 		return
@@ -209,6 +215,7 @@ func deleteItem(ctx iris.Context) {
 	handleClientRequestArgs.Method = "delete"
 	handleClientRequestArgs.Variables = itemIdByte
 	requestBackEnds(handleClientRequestArgs, &handleClientRequestReply)
+	// If the request failed
 	if !handleClientRequestReply.Result {
 		ctx.HTML("Failed")
 		return

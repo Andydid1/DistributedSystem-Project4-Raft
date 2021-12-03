@@ -56,6 +56,7 @@ func InitInventory() *models.Inventory {
 	return Inventory
 }
 
+// Process command-line arguments and return server needed information
 func ProcessFlags() (int, string, map[int]string) {
 	listeningPortStr := ":" + strconv.Itoa(listeningPort)
 	backendInputSlice := strings.Split(backendInput, ",")
@@ -76,6 +77,7 @@ func ProcessFlags() (int, string, map[int]string) {
 	return idInputIntSlice[0], listeningPortStr, ServerSocket
 }
 
+// Register RPC and listen on corresponding port, return listener
 func RegisterAndListen(Server *raft.Server, address string) net.Listener {
 	rpc.Register(Server)
 	rpc.HandleHTTP()
@@ -87,6 +89,7 @@ func RegisterAndListen(Server *raft.Server, address string) net.Listener {
 	return l
 }
 
+// Function use to print the status of a Server ever give period of time
 func Monitor(Server *raft.Server) {
 	for {
 		<-time.After(3 * time.Second)

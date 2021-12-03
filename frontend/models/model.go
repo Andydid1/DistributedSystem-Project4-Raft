@@ -18,11 +18,13 @@ type Inventory struct {
 	NewId            int
 }
 
+// Struct of arguments of requests
 type HandleClientRequestArguments struct {
 	Method    string
 	Variables []byte
 }
 
+// Struct of reply of requests
 type HandleClientRequestReply struct {
 	Result       bool
 	ResponseData []byte

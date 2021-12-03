@@ -6,6 +6,7 @@ import (
 	"time"
 )
 
+// Return true if the number of alive followers is able to form a forum
 func (svr *Server) IsForum(args EmptyArgument, reply *IsForumReply) error {
 	totalFollower := len(svr.State.Connection)
 	connectedCount := 0
@@ -18,8 +19,8 @@ func (svr *Server) IsForum(args EmptyArgument, reply *IsForumReply) error {
 	return nil
 }
 
+// Method used to apply all commited-but-not-applied entries to state machine
 func (svr *Server) ApplyToStateMachine(args EmptyArgument, reply *EmptyReply) error {
-	fmt.Println("Applying to StateMachine")
 	for svr.State.LastApplied < svr.State.CommitIndex {
 		svr.State.LastApplied += 1
 		entry := svr.State.Logs[svr.State.LastApplied]
@@ -37,10 +38,11 @@ func (svr *Server) ApplyToStateMachine(args EmptyArgument, reply *EmptyReply) er
 	return nil
 }
 
+// Method for endpoints to handle AppendEntries requests
+// AppendEntriesReply.Success is the result of AppendEntries, AppendEntriesRely.Term is the term of this endpoint
 func (svr *Server) AppendEntries(args *AppendEntriesArguments, reply *AppendEntriesReply) error {
-	// Check concensus status
+	// Reply false if term < currentTerm
 	if args.Term < svr.State.CurrentTerm {
-		// reply false
 		reply.Term = svr.State.CurrentTerm
 		reply.Success = false
 		return nil
@@ -52,10 +54,11 @@ func (svr *Server) AppendEntries(args *AppendEntriesArguments, reply *AppendEntr
 		// Update term if needed
 		svr.State.CurrentTerm = args.Term
 		svr.RWMutex.Unlock()
+		// Refresh timeout
 		svr.HeartBeatReceived <- true
 	}
+	// Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm
 	if len(svr.State.Logs) < args.PrevLogIndex+1 || svr.State.Logs[args.PrevLogIndex].Term != args.PrevLogTerm {
-		// reply false
 		reply.Term = svr.State.CurrentTerm
 		reply.Success = false
 		return nil
@@ -75,11 +78,15 @@ func (svr *Server) AppendEntries(args *AppendEntriesArguments, reply *AppendEntr
 	return nil
 }
 
+// Method for a leader to ensure all logs of a targeted follower is identical to the leader
+// If logs are identical in the end, the follower id and true is sent to ConcensusArguments.ConcensusResult
 func (svr *Server) Concensus(args ConcensusArguments, reply *EmptyReply) error {
+	// Send the first request
 	var appendEntriesReply AppendEntriesReply
 	var appendEntriesArgs AppendEntriesArguments
 	appendEntriesArgs = args.AppendEntriesArgs
 	connected := call(svr.PeerIdAddresses[args.TargetId], "Server.AppendEntries", appendEntriesArgs, &appendEntriesReply)
+	// If the connection is successful and the AppliedEntry failed because of log inconsistency, decrement and retry
 	for connected && svr.State.IsLeader && !appendEntriesReply.Success && appendEntriesReply.Term <= svr.State.CurrentTerm && appendEntriesArgs.PrevLogIndex > 0 {
 		fmt.Print("Resending Concensus to", args.TargetId)
 		appendEntriesReply.Success = false
@@ -88,9 +95,11 @@ func (svr *Server) Concensus(args ConcensusArguments, reply *EmptyReply) error {
 		appendEntriesArgs.Entries = svr.State.Logs[appendEntriesArgs.PrevLogIndex+1:]
 		_ = call(svr.PeerIdAddresses[args.TargetId], "Server.AppendEntries", appendEntriesArgs, &appendEntriesReply)
 	}
+	// Update connection status
 	svr.RWMutex.Lock()
-	svr.State.Connection[args.TargetId] = appendEntriesReply.Success
+	svr.State.Connection[args.TargetId] = connected
 	svr.RWMutex.Unlock()
+	// If the final result is successful, update MatchIndex and NextIndex
 	if appendEntriesReply.Success {
 		svr.RWMutex.Lock()
 		svr.State.MatchIndex[args.TargetId] = len(svr.State.Logs) - 1
@@ -104,15 +113,15 @@ func (svr *Server) Concensus(args ConcensusArguments, reply *EmptyReply) error {
 	return nil
 }
 
+// The method used to replicate the entry from client request to all followers
+// The boolean indicating if majority of endpoints successfully replicated is sent to ReplicateArguments.MajorityAchieved
 func (svr *Server) Replicate(args ReplicateArguments, reply *EmptyReply) error {
-	fmt.Println("Start Replicating")
 	// Add entry to own log
 	svr.RWMutex.Lock()
 	svr.State.Logs = append(svr.State.Logs, args.Entry)
 	svr.RWMutex.Unlock()
 
-	// Distribute entry to followers
-	var completedFollowers = make(map[int]bool)
+	// Distribute entry to followers and keep followers concensus with self through Concensus
 	var ConsensusResult = make(chan struct {
 		int
 		bool
@@ -125,7 +134,6 @@ func (svr *Server) Replicate(args ReplicateArguments, reply *EmptyReply) error {
 	appendEntriesArgs.Entries = append(appendEntriesArgs.Entries, args.Entry)
 	appendEntriesArgs.LeaderCommit = svr.State.CommitIndex
 	for followerId, _ := range svr.PeerIdAddresses {
-		completedFollowers[followerId] = false
 		var concensusArgs ConcensusArguments
 		concensusArgs.TargetId = followerId
 		concensusArgs.ConcensusResult = ConsensusResult
@@ -139,32 +147,33 @@ func (svr *Server) Replicate(args ReplicateArguments, reply *EmptyReply) error {
 	resultSent := false
 	for resultReceived < len(svr.PeerIdAddresses) {
 		result := <-ConsensusResult
-		fmt.Println("Result received from", result.int, result.bool)
-		completedFollowers[result.int] = true
 		resultReceived += 1
 		if result.bool {
 			successNum += 1
 		}
 		if svr.State.IsLeader && successNum == int(len(svr.PeerIdAddresses)/2) {
+			// If majority is achieved
 			if !resultSent {
 				args.MajorityAchieved <- true
 				resultSent = true
 			}
 		} else if !svr.State.IsLeader {
+			// If self is no longer a leader (interupted by RequestVote or AppendEntries with higher term)
 			if !resultSent {
 				args.MajorityAchieved <- false
 				resultSent = true
 			}
 		}
 	}
+	// If all results are received and majority is not achived, respond the result
 	if !resultSent {
-		fmt.Println("Case 4")
 		args.MajorityAchieved <- false
 	}
-	fmt.Println("Replication Complete")
 	return nil
 }
 
+// Method to handle request from frontend
+// Reply.Result is true if the request is successful
 func (svr *Server) HandleClientRequest(args HandleClientRequestArguments, reply *HandleClientRequestReply) error {
 	// If no leader is known, wait for a bit and redirect to self
 	if svr.State.VotedFor == -1 {
@@ -212,16 +221,14 @@ func (svr *Server) HandleClientRequest(args HandleClientRequestArguments, reply 
 		replicateArgs.Entry = entry
 		go svr.Replicate(replicateArgs, &FOOREPLY)
 		// Wait for response
-		fmt.Println("Start waiting in handling")
 		achieved := <-majorityAchieved
-		fmt.Println("End waiting in handling")
-		// Commit and reply
+		// Commit and apply to state machine if replication is completed by majority of followers
 		if achieved {
 			// Commit
 			svr.RWMutex.Lock()
 			svr.State.CommitIndex = len(svr.State.Logs) - 1
 			svr.RWMutex.Unlock()
-			// Apply to state machine
+			// Apply the entry to state machine
 			svr.ApplyToStateMachine(FOOARGS, &FOOREPLY)
 			// Reply Success
 			reply.Result = true
@@ -233,43 +240,46 @@ func (svr *Server) HandleClientRequest(args HandleClientRequestArguments, reply 
 	}
 }
 
+// Method for an endpoint to respond to RequestVote requests
 func (svr *Server) RequestVote(args *RequestVoteArguments, reply *RequestVoteReply) error {
+	// Reply false if term < currentTerm
 	if args.Term < svr.State.CurrentTerm {
-		// fmt.Println("Condition 1")
 		reply.Term = svr.State.CurrentTerm
 		reply.VoteGranted = false
 		return nil
 	}
+	// If the candidate has higher term, stop being a candidate or a leader
+	// Become a follower with no known leader, update the term to the newest
 	if svr.State.CurrentTerm < args.Term {
-		// fmt.Println("Condition 2")
 		svr.RWMutex.Lock()
 		svr.State.CurrentTerm = args.Term
 		svr.State.VotedFor = -1
 		svr.State.IsLeader = false
 		svr.RWMutex.Unlock()
 	}
-	if (svr.State.VotedFor == -1 || svr.State.VotedFor == args.CandidateId) && (args.LastLogTerm >= svr.State.Logs[len(svr.State.Logs)-1].Term && args.LastLogIndex >= len(svr.State.Logs)-1) { //candidate up to date:
-		// fmt.Println("Condition 3")
+	// If votedFor is null or candidateId, and candidate’s log is at least as up-to-date as receiver’s log, grant vote
+	if (svr.State.VotedFor == -1 || svr.State.VotedFor == args.CandidateId) && (args.LastLogTerm >= svr.State.Logs[len(svr.State.Logs)-1].Term && args.LastLogIndex >= len(svr.State.Logs)-1) {
 		svr.RWMutex.Lock()
 		svr.State.VotedFor = args.CandidateId
 		svr.RWMutex.Unlock()
 		reply.Term = svr.State.CurrentTerm
 		reply.VoteGranted = true
 	} else {
-		// fmt.Println("Condition 4")
 		reply.Term = svr.State.CurrentTerm
 		reply.VoteGranted = false
 	}
 	return nil
 }
 
+// Method for a follower to start an election and complete an election
 func (svr *Server) Election(args EmptyArgument, reply *EmptyReply) error {
-	//Update current term
+	//Update current term and vote for self
 	svr.RWMutex.Lock()
 	svr.State.CurrentTerm += 1
 	svr.State.VotedFor = svr.Id
 	svr.RWMutex.Unlock()
 
+	// Set up SendRequestVote arguments and send to all endpoints
 	VoteResults := make(chan bool)
 	AbandonElection := make(chan bool)
 	for _, address := range svr.PeerIdAddresses {
@@ -279,16 +289,22 @@ func (svr *Server) Election(args EmptyArgument, reply *EmptyReply) error {
 		arguments.AbandonElection = AbandonElection
 		go svr.SendRequestVote(arguments, &FOOREPLY)
 	}
+
+	// Wait for results and count if the election wins
 	successNum := 0
 	electionResultGenerated := false
+	// For each endpoint, either receive a vote result or a message to abandon the election (when the endpoint has higher term than candidate)
 	for i := 0; i < len(svr.PeerIdAddresses); i++ {
 		select {
+		// If the candidate receive a vote result
 		case success := <-VoteResults:
 			if success {
 				successNum += 1
 			}
+			// If the election is not abandoned, the candidate is still a candidate, and the number of success votes just got over majority
 			if !electionResultGenerated && svr.State.VotedFor == svr.Id && successNum == int(len(svr.PeerIdAddresses)/2) {
-				fmt.Println("A leader with term", svr.State.CurrentTerm)
+				// Become a leader and update corresponding states
+				fmt.Println("You become a leader with term", svr.State.CurrentTerm)
 				var newNextIndex = make(map[int]int)
 				var newMatchIndex = make(map[int]int)
 				var newConnection = make(map[int]bool)
@@ -299,25 +315,30 @@ func (svr *Server) Election(args EmptyArgument, reply *EmptyReply) error {
 				}
 				svr.RWMutex.Lock()
 				svr.State.IsLeader = true
+				// Refresh the timeout countdown of the candidate
+				svr.HeartBeatReceived <- true
 				svr.State.NextIndex = newNextIndex
 				svr.State.MatchIndex = newMatchIndex
 				svr.State.Connection = newConnection
 				svr.RWMutex.Unlock()
+				// Send HeartBeat informing all endpoints
 				go svr.HeartBeat(FOOARGS, &FOOREPLY)
 				electionResultGenerated = true
 			}
 			break
+		// If the election is abandoned, become a follower without known leader
 		case <-AbandonElection:
 			svr.State.VotedFor = -1
 			electionResultGenerated = true
 			break
 		}
 	}
-	fmt.Println("Election End with success", successNum)
 	return nil
 }
 
+// Method to send RequestVote to targeted endpoint
 func (svr *Server) SendRequestVote(args SendRequestVoteArguments, reply *EmptyReply) error {
+	// Set up arguments and call
 	var requestVoteReply RequestVoteReply
 	var requestVoteArguments RequestVoteArguments
 	requestVoteArguments.Term = svr.State.CurrentTerm
@@ -325,7 +346,9 @@ func (svr *Server) SendRequestVote(args SendRequestVoteArguments, reply *EmptyRe
 	requestVoteArguments.LastLogIndex = len(svr.State.Logs) - 1
 	requestVoteArguments.LastLogTerm = svr.State.Logs[len(svr.State.Logs)-1].Term
 	connected := call(args.Address, "Server.RequestVote", requestVoteArguments, &requestVoteReply)
-
+	// After receiving the result
+	// If the endpoint receiving RequestVote has higher term than candidate, abandon the election
+	// Else respond the vote result through channel
 	if connected && requestVoteReply.Term > svr.State.CurrentTerm {
 		fmt.Println("Abandon Election")
 		args.AbandonElection <- true
@@ -336,7 +359,10 @@ func (svr *Server) SendRequestVote(args SendRequestVoteArguments, reply *EmptyRe
 	return nil
 }
 
+// Method for leader to request all followers with Concensus call
+// If a follower is alive, its content would be consisten with the leader after each HeartBeat
 func (svr *Server) HeartBeat(EmptyArgument, *EmptyReply) error {
+	// Create arguments for Concensus and call
 	var ConsensusResult = make(chan struct {
 		int
 		bool
@@ -354,13 +380,17 @@ func (svr *Server) HeartBeat(EmptyArgument, *EmptyReply) error {
 		concensusArgs.AppendEntriesArgs = appendEntriesArgs
 		go svr.Concensus(concensusArgs, &FOOREPLY)
 	}
+	// Used to catch concensus result and avoid blocking
 	for _, _ = range svr.PeerIdAddresses {
 		<-ConsensusResult
 	}
-	// fmt.Println(svr.State.Connection)
 	return nil
 }
 
+// Run the Server
+// If the Server is a leader, create a new goroutine and perform HeartBeat to all followers every 50 ms
+// If the Server is not a leader, after a random amount of time between 150ms to 300ms without receiving
+// a HeartBeat, start an election.
 func (svr *Server) Run(EmptyArgument, *EmptyReply) error {
 	for {
 		if svr.State.IsLeader {
@@ -380,6 +410,7 @@ func (svr *Server) Run(EmptyArgument, *EmptyReply) error {
 	}
 }
 
+// Send the termination signal to stop the server
 func (svr *Server) TerminateServer(EmptyArgument, *EmptyReply) error {
 	svr.Terminate <- true
 	return nil
