@@ -24,6 +24,7 @@ func InitServer(id int, peerIdAddresses map[int]string) *raft.Server {
 	Server.Address = "localhost:" + strconv.Itoa(listeningPort)
 	Server.HeartBeatReceived = make(chan bool)
 	Server.Terminate = make(chan bool)
+	Server.State.Connection = make(map[int]bool)
 	Server.PeerIdAddresses = peerIdAddresses
 	Server.Inventory = InitInventory()
 	Server.State.CurrentTerm = 0
@@ -35,6 +36,11 @@ func InitServer(id int, peerIdAddresses map[int]string) *raft.Server {
 	Server.State.LastApplied = 0
 	Server.State.MatchIndex = make(map[int]int)
 	Server.State.NextIndex = make(map[int]int)
+	for id, _ := range peerIdAddresses {
+		Server.State.Connection[id] = false
+		Server.State.MatchIndex[id] = 0
+		Server.State.NextIndex[id] = 0
+	}
 	return Server
 }
 
@@ -83,7 +89,7 @@ func RegisterAndListen(Server *raft.Server, address string) net.Listener {
 
 func Monitor(Server *raft.Server) {
 	for {
-		<-time.After(1 * time.Second)
+		<-time.After(3 * time.Second)
 		fmt.Println("====================")
 		fmt.Println("Leader?", Server.State.IsLeader)
 		fmt.Println("Term?", Server.State.CurrentTerm)

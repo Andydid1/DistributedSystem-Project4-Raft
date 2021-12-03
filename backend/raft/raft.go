@@ -6,6 +6,18 @@ import (
 	"time"
 )
 
+func (svr *Server) IsForum(args EmptyArgument, reply *IsForumReply) error {
+	totalFollower := len(svr.State.Connection)
+	connectedCount := 0
+	for _, connection := range svr.State.Connection {
+		if connection {
+			connectedCount += 1
+		}
+	}
+	reply.IsForum = connectedCount >= int(totalFollower/2)
+	return nil
+}
+
 func (svr *Server) ApplyToStateMachine(args EmptyArgument, reply *EmptyReply) error {
 	fmt.Println("Applying to StateMachine")
 	for svr.State.LastApplied < svr.State.CommitIndex {
@@ -76,6 +88,9 @@ func (svr *Server) Concensus(args ConcensusArguments, reply *EmptyReply) error {
 		appendEntriesArgs.Entries = svr.State.Logs[appendEntriesArgs.PrevLogIndex+1:]
 		_ = call(svr.PeerIdAddresses[args.TargetId], "Server.AppendEntries", appendEntriesArgs, &appendEntriesReply)
 	}
+	svr.RWMutex.Lock()
+	svr.State.Connection[args.TargetId] = appendEntriesReply.Success
+	svr.RWMutex.Unlock()
 	if appendEntriesReply.Success {
 		svr.RWMutex.Lock()
 		svr.State.MatchIndex[args.TargetId] = len(svr.State.Logs) - 1
@@ -90,6 +105,7 @@ func (svr *Server) Concensus(args ConcensusArguments, reply *EmptyReply) error {
 }
 
 func (svr *Server) Replicate(args ReplicateArguments, reply *EmptyReply) error {
+	fmt.Println("Start Replicating")
 	// Add entry to own log
 	svr.RWMutex.Lock()
 	svr.State.Logs = append(svr.State.Logs, args.Entry)
@@ -141,12 +157,15 @@ func (svr *Server) Replicate(args ReplicateArguments, reply *EmptyReply) error {
 			}
 		}
 	}
+	if !resultSent {
+		fmt.Println("Case 4")
+		args.MajorityAchieved <- false
+	}
 	fmt.Println("Replication Complete")
 	return nil
 }
 
 func (svr *Server) HandleClientRequest(args HandleClientRequestArguments, reply *HandleClientRequestReply) error {
-	fmt.Println(svr.Address, "Handling Request")
 	// If no leader is known, wait for a bit and redirect to self
 	if svr.State.VotedFor == -1 {
 		time.Sleep(50 * time.Millisecond)
@@ -164,6 +183,7 @@ func (svr *Server) HandleClientRequest(args HandleClientRequestArguments, reply 
 		_ = call(svr.Address, "Server.HandleClientRequest", args, reply)
 		return nil
 	}
+	fmt.Println(svr.Address, "Handling Request")
 
 	if args.Method == "inventory" {
 		// If it's a read request
@@ -172,6 +192,14 @@ func (svr *Server) HandleClientRequest(args HandleClientRequestArguments, reply 
 		return nil
 	} else {
 		// If it's not a read request
+		// Reply failure if forum is not formed
+		var isForumReply IsForumReply
+		_ = svr.IsForum(FOOARGS, &isForumReply)
+		if !isForumReply.IsForum {
+			reply.Result = false
+			return nil
+		}
+
 		// Replicate the log entry to self and all followers
 		var majorityAchieved = make(chan bool)
 		var entry Entry
@@ -184,7 +212,9 @@ func (svr *Server) HandleClientRequest(args HandleClientRequestArguments, reply 
 		replicateArgs.Entry = entry
 		go svr.Replicate(replicateArgs, &FOOREPLY)
 		// Wait for response
+		fmt.Println("Start waiting in handling")
 		achieved := <-majorityAchieved
+		fmt.Println("End waiting in handling")
 		// Commit and reply
 		if achieved {
 			// Commit
@@ -259,12 +289,19 @@ func (svr *Server) Election(args EmptyArgument, reply *EmptyReply) error {
 			}
 			if !electionResultGenerated && svr.State.VotedFor == svr.Id && successNum == int(len(svr.PeerIdAddresses)/2) {
 				fmt.Println("A leader with term", svr.State.CurrentTerm)
-				svr.RWMutex.Lock()
-				svr.State.IsLeader = true
 				var newNextIndex = make(map[int]int)
 				var newMatchIndex = make(map[int]int)
+				var newConnection = make(map[int]bool)
+				for id, _ := range svr.PeerIdAddresses {
+					newNextIndex[id] = 0
+					newMatchIndex[id] = 0
+					newConnection[id] = false
+				}
+				svr.RWMutex.Lock()
+				svr.State.IsLeader = true
 				svr.State.NextIndex = newNextIndex
 				svr.State.MatchIndex = newMatchIndex
+				svr.State.Connection = newConnection
 				svr.RWMutex.Unlock()
 				go svr.HeartBeat(FOOARGS, &FOOREPLY)
 				electionResultGenerated = true
@@ -320,6 +357,7 @@ func (svr *Server) HeartBeat(EmptyArgument, *EmptyReply) error {
 	for _, _ = range svr.PeerIdAddresses {
 		<-ConsensusResult
 	}
+	// fmt.Println(svr.State.Connection)
 	return nil
 }
 

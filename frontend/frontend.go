@@ -90,6 +90,7 @@ func inventory(ctx iris.Context) {
 	itemSlice := mapToSlice(inventory.Items)
 	if unmarshalErr != nil {
 		fmt.Println(unmarshalErr.Error())
+		ctx.HTML(`Failed!`)
 		return
 	}
 	// Present data
@@ -122,6 +123,10 @@ func addItem(ctx iris.Context) {
 	handleClientRequestArgs.Method = "add"
 	handleClientRequestArgs.Variables = newItemByte
 	requestBackEnds(handleClientRequestArgs, &handleClientRequestReply)
+	if !handleClientRequestReply.Result {
+		ctx.HTML("Failed")
+		return
+	}
 	ctx.Redirect("/inventory")
 }
 
@@ -174,6 +179,10 @@ func updateItem(ctx iris.Context) {
 	handleClientRequestArgs.Method = "update"
 	handleClientRequestArgs.Variables = newItemByte
 	requestBackEnds(handleClientRequestArgs, &handleClientRequestReply)
+	if !handleClientRequestReply.Result {
+		ctx.HTML("Failed")
+		return
+	}
 	ctx.Redirect("/inventory")
 }
 
@@ -200,6 +209,10 @@ func deleteItem(ctx iris.Context) {
 	handleClientRequestArgs.Method = "delete"
 	handleClientRequestArgs.Variables = itemIdByte
 	requestBackEnds(handleClientRequestArgs, &handleClientRequestReply)
+	if !handleClientRequestReply.Result {
+		ctx.HTML("Failed")
+		return
+	}
 	ctx.Redirect("/inventory")
 }
 

@@ -1,7 +1,6 @@
 package raft
 
 import (
-	"fmt"
 	"gw1035/project4/backend/models"
 	"net/rpc"
 	"sync"
@@ -37,6 +36,7 @@ type State struct {
 
 	NextIndex  map[int]int
 	MatchIndex map[int]int
+	Connection map[int]bool
 }
 
 type Entry struct {
@@ -102,6 +102,10 @@ type HandleClientRequestReply struct {
 	ResponseData []byte
 }
 
+type IsForumReply struct {
+	IsForum bool
+}
+
 type EmptyArgument struct{}
 
 type EmptyReply struct{}
@@ -109,14 +113,14 @@ type EmptyReply struct{}
 func call(address string, calling string, args interface{}, reply interface{}) bool {
 	c, dialErr := rpc.DialHTTP("tcp", address)
 	if dialErr != nil {
-		fmt.Println(dialErr.Error())
+		// fmt.Println(dialErr.Error())
 		return false
 	}
 	defer c.Close()
 
 	callErr := c.Call(calling, args, reply)
 	if callErr != nil {
-		fmt.Println(callErr.Error())
+		// fmt.Println(callErr.Error())
 		return false
 	}
 	return true
